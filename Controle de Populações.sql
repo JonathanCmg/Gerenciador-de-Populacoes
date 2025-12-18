@@ -16,11 +16,12 @@ DROP ROLE IF EXISTS role_admin;
 DROP ROLE IF EXISTS role_leitura; 
 
 DROP TABLE IF EXISTS grupos_populacionais CASCADE;
-DROP TABLE IF EXISTS estado CASCADE;
+DROP TABLE IF EXISTS estados CASCADE;
 DROP TABLE IF EXISTS paises CASCADE;
 DROP TABLE IF EXISTS usuarios CASCADE;
 DROP TABLE IF EXISTS empresas CASCADE;
 
+--Tabelas
 CREATE TABLE empresas (
     id SERIAL PRIMARY KEY,
     nome VARCHAR(100) NOT NULL UNIQUE
@@ -32,7 +33,8 @@ CREATE TABLE usuarios (
     senha_hash VARCHAR(255) NOT NULL,
     email VARCHAR(100) UNIQUE,
     nivel_acesso VARCHAR(20) NOT NULL CHECK (nivel_acesso IN ('ADMIN', 'GESTOR', 'LEITURA')), 
-    id_empresa INTEGER NOT NULL REFERENCES empresas(id) ON DELETE RESTRICT,
+    id_empresa INTEGER NOT NULL,
+	CONSTRAINT fk_empresa_usuario FOREIGN KEY (id_empresa) REFERENCES empresas(id) ON DELETE CASCADE,
     ativo BOOLEAN DEFAULT TRUE
 );
 
@@ -44,7 +46,8 @@ CREATE TABLE paises (
 CREATE TABLE estados (
     id SERIAL PRIMARY KEY,
     nome VARCHAR(100) NOT NULL,
-    id_pais INTEGER NOT NULL REFERENCES paises(id) ON DELETE CASCADE
+    id_pais INTEGER NOT NULL,
+	CONSTRAINT fk_pais_estado FOREIGN KEY (id_pais) REFERENCES paises(id) ON DELETE CASCADE
 );
 
 CREATE TABLE grupos_populacionais (
@@ -53,10 +56,13 @@ CREATE TABLE grupos_populacionais (
     tipo VARCHAR(100) NOT NULL,
     nacionalidade VARCHAR(100),
     religiao VARCHAR(100),
-    id_estado INTEGER NOT NULL REFERENCES estados(id) ON DELETE CASCADE
+    id_estado INTEGER NOT NULL,
+	CONSTRAINT fk_estado_grupo_pop FOREIGN KEY (id_estado) REFERENCES estados(id) ON DELETE CASCADE,
+	id_usuario INT,
+	CONSTRAINT fk_usuario_grupo_pop FOREIGN KEY (id_usuario) REFERENCES usuarios(id) ON DELETE CASCADE
 );
 
-
+--Inserts
 INSERT INTO empresas (nome) VALUES 
 ('Governanca Global'), 
 ('Instituto de Pesquisa X'), 
@@ -82,7 +88,7 @@ INSERT INTO grupos_populacionais (tamanho, tipo, nacionalidade, religiao, id_est
 (40, 'dançarinos', 'brasileira', 'sem religião', (SELECT id FROM estados WHERE nome = 'Rio de Janeiro')),
 (500, 'tecnologia', 'estadunidense', 'sem religião', (SELECT id FROM estados WHERE nome = 'California'));
 
-
+--Views
 CREATE OR REPLACE VIEW vw_grupos_com_estados AS
 SELECT g.id, g.tamanho, g.tipo, g.nacionalidade, g.religiao, e.nome AS estado
 FROM grupos_populacionais g JOIN estados e ON g.id_estado = e.id;
@@ -106,20 +112,63 @@ FROM usuarios u
 JOIN empresas e ON u.id_empresa = e.id
 ORDER BY u.nome_usuario;
 
-CREATE OR REPLACE FUNCTION excluir_pais(p_id INT)
-RETURNS VOID AS $$
+CREATE MATERIALIZED VIEW vw_pesquisa_grupos AS
+SELECT
+    g.id AS id_grupo,
+    g.tamanho,
+    g.tipo,
+    g.nacionalidade,
+    g.religiao,
+    e.nome AS estado,
+    p.nome AS pais
+FROM grupos_populacionais g
+JOIN estados e ON g.id_estado = e.id
+JOIN paises p ON e.id_pais = p.id;
+
+--Functions
+CREATE OR REPLACE FUNCTION fn_pesquisar_grupo_por_tipo(p_tipo VARCHAR)
+RETURNS TABLE (
+    id_grupo INT,
+    tipo VARCHAR,
+    tamanho INT,
+    estado VARCHAR,
+    pais VARCHAR
+) AS $$
 BEGIN
-    DELETE FROM paises WHERE id = p_id;
+    RETURN QUERY
+    SELECT
+        id_grupo,
+        tipo,
+        tamanho,
+        estado,
+        pais
+    FROM mv_pesquisa_grupos
+    WHERE tipo ILIKE '%' || p_tipo || '%';
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION excluir_estado(e_id INT)
-RETURNS VOID AS $$
+CREATE OR REPLACE FUNCTION fn_pesquisar_grupo_por_pais(p_pais VARCHAR)
+RETURNS TABLE (
+    id_grupo INT,
+    tipo VARCHAR,
+    nacionalidade VARCHAR,
+    estado VARCHAR,
+    pais VARCHAR
+) AS $$
 BEGIN
-    DELETE FROM estados WHERE id = e_id;
+    RETURN QUERY
+    SELECT
+        id_grupo,
+        tipo,
+        nacionalidade,
+        estado,
+        pais
+    FROM mv_pesquisa_grupos
+    WHERE pais ILIKE '%' || p_pais || '%';
 END;
 $$ LANGUAGE plpgsql;
 
+--Procedures
 CREATE OR REPLACE PROCEDURE sp_editar_grupo_populacional (novo_tamanho INT,novo_tipo VARCHAR, 
 nova_nacionalidade VARCHAR,nova_religiao VARCHAR, id_estado INT,id_p INT)  
 	AS $$  
@@ -148,6 +197,8 @@ CREATE OR REPLACE PROCEDURE sp_excluir_grupo_populacional (id_p INT)
 
 	END; $$ LANGUAGE plpgsql;
 
+--Triggers
+
 CREATE OR REPLACE FUNCTION fn_validar_update_grupo()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -164,6 +215,21 @@ BEFORE UPDATE ON grupos_populacionais
 FOR EACH ROW
 EXECUTE FUNCTION fn_validar_update_grupo();
 
+CREATE OR REPLACE FUNCTION fn_refresh_mv_grupos()
+RETURNS TRIGGER AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW mv_pesquisa_grupos;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER tg_refresh_mv_grupos
+AFTER INSERT OR UPDATE OR DELETE
+ON grupos_populacionais
+FOR EACH STATEMENT
+EXECUTE FUNCTION fn_refresh_mv_grupos();
+
+--Roles
 CREATE ROLE role_admin; 
 CREATE ROLE role_leitura; 
 
